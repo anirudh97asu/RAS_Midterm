@@ -1,0 +1,4 @@
+Help on function move_to in module pydobot.dobot:
+
+move_to(self, x, y, z, r=0.0, mode=<MODE_PTP.MOVJ_XYZ: 1>)
+

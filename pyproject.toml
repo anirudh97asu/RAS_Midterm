@@ -1,0 +1,18 @@
+[project]
+name = "lab-4"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dotenv>=0.9.9",
+    "google-generativeai>=0.8.5",
+    "numpy>=2.3.3",
+    "onnxruntime>=1.23.0",
+    "opencv-python>=4.11.0.86",
+    "pillow>=11.3.0",
+    "pydantic>=2.12.0",
+    "pydobot2>=0.1.0",
+    "scipy>=1.16.2",
+    "sympy>=1.14.0",
+]

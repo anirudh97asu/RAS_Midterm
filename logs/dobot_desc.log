@@ -1,0 +1,84 @@
+Help on class Dobot in module pydobot.dobot:
+
+class Dobot(builtins.object)
+ |  Dobot(port: Optional[str] = None) -> None
+ |
+ |  Methods defined here:
+ |
+ |  __init__(self, port: Optional[str] = None) -> None
+ |      Initialize self.  See help(type(self)) for accurate signature.
+ |
+ |  clear_alarms(self) -> None
+ |
+ |  close(self) -> None
+ |
+ |  conveyor_belt(self, speed, direction=1, interface=0)
+ |
+ |  conveyor_belt_distance(self, speed, distance, direction=1, interface=0)
+ |
+ |  engrave(self, image, pixel_size, low=0.0, high=40.0, velocity=5, acceleration=5, actual_acceleration=5)
+ |      Shade engrave the given image.
+ |      :param image: NumPy array representing the image. Should be 8 bit grayscale image.
+ |      :param pixel_size: Pixel size in mm.
+ |      :param low: Image values will be scaled to range of <low, high>.
+ |      :param high: dtto
+ |      :param velocity: Maximum junction velocity (CPParams).
+ |      :param acceleration: Maximum planned accelerations (CPParams).
+ |      :param actual_acceleration: Maximum actual acceleration, used in non-real-time mode.
+ |      :return:
+ |
+ |      Example usage:
+ |
+ |      >>> from PIL import Image
+ |      >>> import numpy as np
+ |      >>> d = Dobot()
+ |      >>> im = Image.open("image.jpg")
+ |      >>> im = im.convert("L")
+ |      >>> im = np.array(im)
+ |
+ |      >>> x, y = d.get_pose().position[0:2]
+ |      >>> d.wait_for_cmd(d.move_to(x, y, -74.0))
+ |
+ |      >>> d.engrave(im, 0.1)
+ |
+ |  get_alarms(self) -> Set[pydobot.dobot.Alarm]
+ |
+ |  get_pose(self) -> pydobot.dobot.Pose
+ |
+ |  go_arc(self, x, y, z, r, cir_x, cir_y, cir_z, cir_r)
+ |
+ |  grip(self, enable)
+ |
+ |  home(self)
+ |
+ |  jog_r(self, v)
+ |
+ |  jog_x(self, v)
+ |
+ |  jog_y(self, v)
+ |
+ |  jog_z(self, v)
+ |
+ |  laze(self, power=0, enable=False)
+ |
+ |  move_to(self, x, y, z, r=0.0, mode=<MODE_PTP.MOVJ_XYZ: 1>)
+ |
+ |  set_home(self, x, y, z, r=0.0)
+ |
+ |  set_io(self, address: int, state: bool)
+ |
+ |  speed(self, velocity=100.0, acceleration=100.0)
+ |
+ |  suck(self, enable)
+ |
+ |  wait_for_cmd(self, cmd_id)
+ |
+ |  ----------------------------------------------------------------------
+ |  Data descriptors defined here:
+ |
+ |  __dict__
+ |      dictionary for instance variables
+ |
+ |  __weakref__
+ |      list of weak references to the object
+

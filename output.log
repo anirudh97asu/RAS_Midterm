@@ -1,0 +1,93 @@
+✓ Real Dobot connected on port: /dev/ttyACM0
+HOME 232.09 -14.74 129.59 3.63
+242.09 -4.74 242.09 -4.74
+242.09 -4.74 268.09000000000003 21.259999999999998
+242.09 -4.74 294.09000000000003 47.26
+242.09 -4.74 320.09000000000003 73.26
+Grid has been built successfully using solver dobot
+------------Let's start Tic Tac Toe Game
+Enter which input symbol you would love to take
+x
+Human Symbol Processed Successfully
+Enter who can play first: 1 -----> me and 2 ------> you
+1
+Starting the game.
+Grid Cells are empty. Go ahead with the game
+robot_symbol o
+dobot Turn to draw the symbol. Enter 'y' once the symbol is drawn from your end.
+(0, 0) <class 'int'> <class 'int'>
+rect 1
+Connecting to Dobot on port /dev/ttyACM0...
+Dobot connected successfully
+Drawing 'o' in cell 1
+Moving to home position...
+At home position
+Drawing at center: (255.09, 8.26)
+Drawing O with radius 9.31mm
+Drawing complete! Waiting for all movements to finish...
+Returning to home position...
+Warning: Could not get current pose: float() argument must be a string or a real number, not 'Position'
+Reached home position
+Waiting for return to home to complete...
+Disconnecting from Dobot...
+Dobot disconnected successfully
+Waiting for Dobot to fully disconnect before camera capture...
+Camera Started and Capturing Frames
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1760665748.596704   80113 alts_credentials.cc:93] ALTS creds ignored. Not running on GCP and untrusted ALTS is not enabled.
+human Turn to draw the symbol
+None
+Camera Started and Capturing Frames
+E0000 00:00:1760665759.064411   80113 alts_credentials.cc:93] ALTS creds ignored. Not running on GCP and untrusted ALTS is not enabled.
+grid_run [['O', '', ''], ['', 'X', ''], ['', '', '']]
+grid_run [['O', '', ''], ['', 'X', ''], ['', '', '']]
+Success [['O', '', ''], ['', 'X', ''], ['', '', '']]
+dobot Turn to draw the symbol. Enter 'y' once the symbol is drawn from your end.
+(0, 1) <class 'int'> <class 'int'>
+rect 2
+Connecting to Dobot on port /dev/ttyACM0...
+Dobot connected successfully
+Drawing 'o' in cell 2
+Moving to home position...
+At home position
+Drawing at center: (255.09, 34.26)
+Drawing O with radius 9.31mm
+Drawing complete! Waiting for all movements to finish...
+Returning to home position...
+Warning: Could not get current pose: float() argument must be a string or a real number, not 'Position'
+Reached home position
+Waiting for return to home to complete...
+Disconnecting from Dobot...
+Dobot disconnected successfully
+Waiting for Dobot to fully disconnect before camera capture...
+Camera Started and Capturing Frames
+E0000 00:00:1760665776.893177   80113 alts_credentials.cc:93] ALTS creds ignored. Not running on GCP and untrusted ALTS is not enabled.
+human Turn to draw the symbol
+None
+Camera Started and Capturing Frames
+E0000 00:00:1760665787.126122   80113 alts_credentials.cc:93] ALTS creds ignored. Not running on GCP and untrusted ALTS is not enabled.
+grid_run [['O', 'O', 'X'], ['', 'X', ''], ['', '', '']]
+grid_run [['O', 'O', 'X'], ['', 'X', ''], ['', '', '']]
+Success [['O', 'O', 'X'], ['', 'X', ''], ['', '', '']]
+dobot Turn to draw the symbol. Enter 'y' once the symbol is drawn from your end.
+(2, 0) <class 'int'> <class 'int'>
+rect 7
+Connecting to Dobot on port /dev/ttyACM0...
+Dobot connected successfully
+Drawing 'o' in cell 7
+Moving to home position...
+At home position
+Drawing at center: (307.09, 8.26)
+Drawing O with radius 9.31mm
+Drawing complete! Waiting for all movements to finish...
+Returning to home position...
+Warning: Could not get current pose: float() argument must be a string or a real number, not 'Position'
+Reached home position
+Waiting for return to home to complete...
+Disconnecting from Dobot...
+Dobot disconnected successfully
+Waiting for Dobot to fully disconnect before camera capture...
+Camera Started and Capturing Frames
+E0000 00:00:1760665806.269261   80113 alts_credentials.cc:93] ALTS creds ignored. Not running on GCP and untrusted ALTS is not enabled.
+You cannot insert multiple symbols in multiple places. Only one symbol insertion is allowed in one iteration.
+The match is draw.
