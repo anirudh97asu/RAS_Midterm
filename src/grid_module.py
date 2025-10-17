@@ -2,248 +2,322 @@ import cv2
 import numpy as np
 import json
 from pathlib import Path
-
-from serial.tools import list_ports
+from dataclasses import dataclass
+from typing import Tuple, Dict, List
 from pydobot import Dobot
-import copy
 
-from pathlib import Path
-
-
-# ---------------- Paths (Pathlib) ----------------
+# ---------------- Configuration ----------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = (SCRIPT_DIR.parent / "config" / "grid_configuration.json")
-PNG_PATH = (SCRIPT_DIR / "input" / "3x3_grid_opencv.png")
-CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)  # ensure ../config exists
+CONFIG_PATH = SCRIPT_DIR.parent / "config" / "grid_configuration.json"
+PNG_PATH = SCRIPT_DIR / "input" / "3x3_grid_opencv.png"
+CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-
-# dobot parameters
-HOME_X = 232.09
-HOME_Y = -14.74
-HOME_Z = 129.59
-HOME_R = 3.63
-
+# Dobot positions
+HOME_X, HOME_Y, HOME_Z, HOME_R = 232.09, -14.74, 129.59, 3.63
 PEN_Z = -8.15
+PORT = "/dev/ttyACM0"
+
+# A4 dimensions in mm
+A4_WIDTH_MM, A4_HEIGHT_MM = 210, 297
 
 
-grid_configuration = {}
-
-# port
-port = "/dev/ttyACM0"  # identify and fix_port
-
-
-# def get_cell_configurations():
-#     grid_size = 3
-#     START_X, START_Y = HOME_X, HOME_Y  # modify as per robot configurations
-#     margin = 20
-#     dobot_canvas_limit = 90
-#     effective_size = dobot_canvas_limit - (2 * margin)
-#     cell_size = effective_size // grid_size
-
-#     grid_configuration["grid_size"] = grid_size
-#     grid_configuration["effective_grid_size"] = effective_size
-#     grid_configuration["cell_size"] = cell_size
-#     grid_configuration["margin"] = margin
-#     grid_configuration["cell_info"] = {}
-
-#     START_X = START_X + margin
-#     START_Y = START_Y + margin
-
-#     counter = 1
-#     for i in range(grid_size):
-#         for j in range(grid_size):
-#             grid_configuration[f"cell_rectangle_{counter}"] = [
-#                 (START_X + i * cell_size, START_Y + j * cell_size),
-#                 (START_X + (i + 1) * cell_size, START_Y + (j + 1) * cell_size),
-#             ]
-#             counter += 1
-
-#     # for j in range(grid_size):      # j = row (Y direction)
-#     #     for i in range(grid_size):  # i = column (X direction)
-#     #         grid_configuration[f"cell_rectangle_{counter}"] = [
-#     #             (START_X + i * cell_size, START_Y + j * cell_size),        # Top-left
-#     #             (START_X + (i + 1) * cell_size, START_Y + (j + 1) * cell_size),  # Bottom-right
-#     #         ]
-#     #         counter += 1
+@dataclass
+class GridParameters:
+    """Configuration parameters for grid creation"""
+    grid_size: int = 3
+    margin: int = 10
+    canvas_limit: int = 100
     
-#     # return grid_configuration
-
-#     return grid_configuration
-
-def get_cell_configurations():
-    """
-    Generate cell rectangles accounting for robot coordinate system:
-    - Robot X = Traditional Y (horizontal)
-    - Robot Y = Traditional X (vertical)
-    """
-    grid_size = 3
-    START_X, START_Y = HOME_X, HOME_Y  # Robot coordinates
+    @property
+    def effective_size(self) -> int:
+        """Calculate effective drawing area"""
+        return self.canvas_limit - (2 * self.margin)
     
-    # Use SAME values as in create_grid_using_dobot()
-    margin = 10  # MUST MATCH the grid drawing function
-    dobot_canvas_limit = 100  # MUST MATCH the grid drawing function
+    @property
+    def cell_size(self) -> int:
+        """Calculate individual cell size"""
+        return self.effective_size // self.grid_size
     
-    effective_size = dobot_canvas_limit - (2 * margin)
-    cell_size = effective_size // grid_size
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "grid_size": self.grid_size,
+            "effective_grid_size": self.effective_size,
+            "cell_size": self.cell_size,
+            "margin": self.margin,
+            "cell_info": {}
+        }
+
+
+class GridConfiguration:
+    """Manages grid cell configurations"""
     
-    grid_configuration["grid_size"] = grid_size
-    grid_configuration["effective_grid_size"] = effective_size
-    grid_configuration["cell_size"] = cell_size
-    grid_configuration["margin"] = margin
-    grid_configuration["cell_info"] = {}
+    def __init__(self, params: GridParameters, start_x: float, start_y: float):
+        self.params = params
+        self.start_x = start_x + params.margin
+        self.start_y = start_y + params.margin
+        self.config = params.to_dict()
     
-    # Apply margin to robot coordinates
-    START_X = START_X + margin  # Robot X (traditional Y)
-    START_Y = START_Y + margin  # Robot Y (traditional X)
-    
-    counter = 1
-    # Grid numbering (row-major, traditional view):
-    # 1 2 3
-    # 4 5 6  
-    # 7 8 9
-
-    
-    for row in range(grid_size):      # row = traditional rows (top to bottom)
-        for col in range(grid_size):  # col = traditional columns (left to right)
-            # In robot coordinates:
-            # - col affects robot-X (traditional Y, horizontal position)
-            # - row affects robot-Y (traditional X, vertical position)
-            
-            robot_x_min = START_X + col * cell_size      # Left edge in traditional view
-            robot_x_max = START_X + (col + 1) * cell_size  # Right edge
-            robot_y_min = START_Y + row * cell_size      # Top edge in traditional view
-            robot_y_max = START_Y + (row + 1) * cell_size  # Bottom edge
-            
-            # Store as [(robot_x1, robot_y1), (robot_x2, robot_y2)]
-            grid_configuration[f"cell_rectangle_{counter}"] = [
-                (robot_x_min, robot_y_min),  # Top-left in traditional view
-                (robot_x_max, robot_y_max),  # Bottom-right in traditional view
-            ]
-            counter += 1
-    
-    return grid_configuration
-
-
-def create_grid_using_dobot(dobot):
-    # A4 size: 210 mm width x 297 mm height
-    # In our dobot case x-> height and y -> width
-
-    dobot.move_to(HOME_X, HOME_Y, HOME_Z, HOME_R)
-
-    print("HOME", HOME_X, HOME_Y, HOME_Z, HOME_R)
-
-    grid_size = 3
-    START_X, START_Y = HOME_X, HOME_Y  # Fix this from dobot.get_position()
-    margin = 10  # 25mm
-    dobot_canvas_limit = 100
-    effective_size = dobot_canvas_limit - (2 * margin)
-    cell_size = effective_size // grid_size
-
-    if dobot is not None:
+    def generate_cell_rectangles(self) -> Dict:
+        """
+        Generate cell rectangle coordinates.
         
-        START_X = START_X + margin
-        START_Y = START_Y + margin
+        Grid numbering (row-major order):
+        1 2 3
+        4 5 6
+        7 8 9
+        
+        Robot coordinate mapping:
+        - Robot X = Traditional Y (horizontal)
+        - Robot Y = Traditional X (vertical)
+        
+        Returns:
+            Dictionary with cell configurations
+        """
+        counter = 1
+        
+        for row in range(self.params.grid_size):
+            for col in range(self.params.grid_size):
+                # Calculate cell boundaries
+                x_min = self.start_x + col * self.params.cell_size
+                x_max = self.start_x + (col + 1) * self.params.cell_size
+                y_min = self.start_y + row * self.params.cell_size
+                y_max = self.start_y + (row + 1) * self.params.cell_size
+                
+                # Store as [(x1, y1), (x2, y2)] - top-left to bottom-right
+                self.config[f"cell_rectangle_{counter}"] = [
+                    (x_min, y_min),
+                    (x_max, y_max)
+                ]
+                counter += 1
+        
+        return self.config
+    
+    def save_to_file(self, filepath: Path):
+        """Save configuration to JSON file"""
+        with filepath.open("w") as f:
+            json.dump(self.config, f, indent=4)
 
-        for i in range(grid_size + 1):
+
+class DobotGridDrawer:
+    """Handles physical grid drawing with Dobot"""
+    
+    def __init__(self, dobot: Dobot, params: GridParameters):
+        self.dobot = dobot
+        self.params = params
+        self.home_pos = (HOME_X, HOME_Y, HOME_Z, HOME_R)
+        self.start_x = HOME_X + params.margin
+        self.start_y = HOME_Y + params.margin
+    
+    def move_home(self):
+        """Return to home position"""
+        self.dobot.move_to(*self.home_pos)
+    
+    def draw_line(self, x1: float, y1: float, x2: float, y2: float):
+        """Draw a line from (x1, y1) to (x2, y2)"""
+        self.move_home()
+        self.dobot.move_to(x1, y1, PEN_Z, 0)
+        self.dobot.move_to(x2, y2, PEN_Z, 0)
+    
+    def draw_grid(self):
+        """Draw the complete grid"""
+        print(f"Starting grid drawing at position: ({HOME_X}, {HOME_Y})")
+        self.move_home()
+        
+        effective_size = self.params.effective_size
+        
+        # Draw all grid lines
+        for i in range(self.params.grid_size + 1):
+            offset = i * self.params.cell_size
             
-            NEW_X = START_X + i * cell_size
-            NEW_Y = START_Y + i * cell_size
-
-            print(START_X, START_Y, NEW_X, NEW_Y)
-
-
-            # move/draw vertical
-            dobot.move_to(HOME_X, HOME_Y, HOME_Z, HOME_R)
-            dobot.move_to(NEW_X, START_Y, PEN_Z, 0)
-            dobot.move_to(NEW_X, START_Y + effective_size, PEN_Z, 0)
-            # move/draw horizontal
-            dobot.move_to(HOME_X, HOME_Y, HOME_Z, HOME_R)
-            dobot.move_to(START_X, NEW_Y, PEN_Z, 0)
-            dobot.move_to((START_X + effective_size), NEW_Y, PEN_Z, 0)
-
-        # return to home position
-        dobot.move_to(HOME_X, HOME_Y, HOME_Z, HOME_R)
-
-    return
+            # Vertical line
+            x = self.start_x + offset
+            self.draw_line(x, self.start_y, x, self.start_y + effective_size)
+            
+            # Horizontal line
+            y = self.start_y + offset
+            self.draw_line(self.start_x, y, self.start_x + effective_size, y)
+            
+            print(f"Line {i+1}/{self.params.grid_size + 1} drawn")
+        
+        # Return to home
+        self.move_home()
+        print("Grid drawing complete")
 
 
-def create_3x3_grid():
+class OpenCVGridDrawer:
+    """Handles virtual grid drawing with OpenCV"""
+    
+    def __init__(self, params: GridParameters):
+        self.params = params
+        self.start_x = int(HOME_X + params.margin)
+        self.start_y = int(HOME_Y + params.margin)
+    
+    def create_canvas(self) -> np.ndarray:
+        """Create blank A4-sized canvas"""
+        return np.ones((A4_HEIGHT_MM, A4_WIDTH_MM, 3), dtype=np.uint8) * 255
+    
+    def draw_grid(self) -> np.ndarray:
+        """
+        Draw grid on canvas matching Dobot configuration
+        
+        Returns:
+            Canvas with drawn grid
+        """
+        canvas = self.create_canvas()
+        effective_size = self.params.effective_size
+        
+        # Draw grid lines
+        for i in range(self.params.grid_size + 1):
+            offset = i * self.params.cell_size
+            
+            # Vertical line
+            x = self.start_x + offset
+            cv2.line(
+                canvas,
+                (x, self.start_y),
+                (x, self.start_y + effective_size),
+                (0, 0, 0),
+                1
+            )
+            
+            # Horizontal line
+            y = self.start_y + offset
+            cv2.line(
+                canvas,
+                (self.start_x, y),
+                (self.start_x + effective_size, y),
+                (0, 0, 0),
+                1
+            )
+        
+        # Draw A4 border
+        cv2.rectangle(
+            canvas,
+            (0, 0),
+            (A4_WIDTH_MM - 1, A4_HEIGHT_MM - 1),
+            (0, 0, 0),
+            2
+        )
+        
+        return canvas
+    
+    def save_grid(self, filepath: Path) -> bool:
+        """
+        Draw and save grid to file
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            grid_image = self.draw_grid()
+            cv2.imwrite(str(filepath), grid_image)
+            print(f"✓ Grid image saved to: {filepath}")
+            return True
+        except Exception as e:
+            print(f"✗ Failed to save grid image: {e}")
+            return False
+
+
+def detect_dobot(port: str = PORT) -> Tuple[bool, Dobot | None]:
     """
-    Create a clean 3x3 grid on A4-sized canvas using OpenCV
-    Canvas dimensions represent actual A4 size in mm: 210mm x 297mm
+    Attempt to connect to Dobot
+    
+    Returns:
+        Tuple of (success, dobot_instance)
     """
-    # A4 dimensions in mm
-    A4_WIDTH_MM = 210
-    A4_HEIGHT_MM = 297
-
-    # Create canvas with A4 dimensions (1 pixel = 1 mm)
-    canvas_width = A4_WIDTH_MM
-    canvas_height = A4_HEIGHT_MM
-    canvas = np.ones((canvas_height, canvas_width, 3), dtype=np.uint8) * 255
-
-    # Grid parameters matching Dobot configuration exactly
-    grid_size = 3
-    START_X_MM, START_Y_MM = HOME_X, HOME_Y  # Same as Dobot start positions
-    MARGIN_MM = 20  # Same as Dobot margin
-    DOBOT_CANVAS_LIMIT_MM = 120  # Same as Dobot canvas limit
-
-    # Calculate effective size and cell size (same calculations as Dobot)
-    effective_size_mm = DOBOT_CANVAS_LIMIT_MM - (2 * MARGIN_MM)  # 80mm
-    cell_size_mm = effective_size_mm // grid_size  # 26mm
-
-    # Apply margin to start positions (same as Dobot)
-    START_X = START_X_MM + MARGIN_MM
-    START_Y = START_Y_MM + MARGIN_MM
-
-    # Draw grid lines
-    for i in range(grid_size + 1):
-        # Vertical lines
-        x = START_X + i * cell_size_mm
-        cv2.line(canvas, (x, START_Y), (x, START_Y + effective_size_mm), (0, 0, 0), 1)
-
-        # Horizontal lines
-        y = START_Y + i * cell_size_mm
-        cv2.line(canvas, (START_X, y), (START_X + effective_size_mm, y), (0, 0, 0), 1)
-
-        print(x, y)
-
-    # Draw A4 border
-    cv2.rectangle(canvas, (0, 0), (A4_WIDTH_MM - 1, A4_HEIGHT_MM - 1), (0, 0, 0), 2)
-
-    return canvas
-
-
-def build_grid():
-    """
-    Main function to create and save the grid
-    """
-    scheduler = None
-    dobot = None
     try:
         dobot = Dobot(port=port)
-        print(f"✓ Real Dobot connected on port: {port}")
-        scheduler = "dobot"
-    except Exception:
-        scheduler = "opencv"
+        print(f"✓ Dobot connected on port: {port}")
+        return True, dobot
+    except Exception as e:
+        print(f"✗ Dobot not available: {e}")
+        return False, None
 
-    if scheduler == "opencv":
-        grid_image = create_3x3_grid()
-        # Use pathlib path (convert to str for OpenCV)
-        cv2.imwrite(str(PNG_PATH), grid_image)
-    else:  # "dobot"
-        create_grid_using_dobot(dobot)
 
-    # Save grid configuration using pathlib
-    get_cell_configurations()
-    with CONFIG_PATH.open("w") as f:
-        json.dump(grid_configuration, f, indent=4)
-
-    if dobot:
-        #dobot.move_to(HOME_X, HOME_Y, HOME_Z, HOME_R)
-        dobot.close()
+def build_grid(port: str = PORT, params: GridParameters | None = None) -> str:
+    """
+    Main function to create grid and save configuration
     
-    return scheduler
+    Args:
+        port: Dobot serial port
+        params: Grid parameters (uses defaults if None)
+    
+    Returns:
+        String indicating which method was used: "dobot" or "opencv"
+    """
+    if params is None:
+        params = GridParameters()
+    
+    # Attempt Dobot connection
+    dobot_available, dobot = detect_dobot(port)
+    
+    # Draw grid based on available method
+    if dobot_available:
+        print("\n=== Drawing physical grid with Dobot ===")
+        drawer = DobotGridDrawer(dobot, params)
+        drawer.draw_grid()
+        method = "dobot"
+    else:
+        print("\n=== Drawing virtual grid with OpenCV ===")
+        drawer = OpenCVGridDrawer(params)
+        drawer.save_grid(PNG_PATH)
+        method = "opencv"
+    
+    # Generate and save cell configuration
+    print("\n=== Generating cell configuration ===")
+    grid_config = GridConfiguration(params, HOME_X, HOME_Y)
+    grid_config.generate_cell_rectangles()
+    grid_config.save_to_file(CONFIG_PATH)
+    print(f"✓ Configuration saved to: {CONFIG_PATH}")
+    
+    # Cleanup
+    if dobot:
+        dobot.close()
+        print("✓ Dobot connection closed")
+    
+    print(f"\n✓ Grid build complete using: {method.upper()}")
+    return method
+
+
+# Backward compatibility functions
+def get_cell_configurations() -> Dict:
+    """
+    Legacy function for backward compatibility
+    
+    Returns:
+        Grid configuration dictionary
+    """
+    params = GridParameters()
+    grid_config = GridConfiguration(params, HOME_X, HOME_Y)
+    return grid_config.generate_cell_rectangles()
+
+
+def create_grid_using_dobot(dobot: Dobot):
+    """
+    Legacy function for backward compatibility
+    """
+    params = GridParameters()
+    drawer = DobotGridDrawer(dobot, params)
+    drawer.draw_grid()
+
+
+def create_3x3_grid() -> np.ndarray:
+    """
+    Legacy function for backward compatibility
+    
+    Returns:
+        Canvas with drawn grid
+    """
+    params = GridParameters()
+    drawer = OpenCVGridDrawer(params)
+    return drawer.draw_grid()
 
 
 if __name__ == "__main__":
+    # Run with default parameters
     build_grid()
+    
+    # Or run with custom parameters
+    # custom_params = GridParameters(grid_size=3, margin=15, canvas_limit=120)
+    # build_grid(params=custom_params)

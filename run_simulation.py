@@ -1,602 +1,295 @@
-# main_tictactoe.py
-import os, json, argparse, cv2
+import os, json, argparse, cv2, sys, time
+from pathlib import Path
 from src.mini_max_algo import TicTacToeAI, run_algorithm
 from src.symbol_detection import run_camera, run_camera_dobot
 from src.grid_module import build_grid
 from src.draw_module import draw_module
-#from src.opencv_draw import DrawModuleCV
 from pydobot import Dobot
-from pathlib import Path
-import sys
-import time
 
-# ---------------- Paths (Pathlib) ----------------
+# ---------------- Configuration ----------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = (SCRIPT_DIR / "config" / "grid_configuration.json")
-PNG_PATH = (SCRIPT_DIR / "input" / "3x3_grid_opencv.png")
-CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)  # ensure ../config exists
-OUTPUT_PATH = SCRIPT_DIR / "output" 
+CONFIG_PATH = SCRIPT_DIR / "config" / "grid_configuration.json"
+PNG_PATH = SCRIPT_DIR / "input" / "3x3_grid_opencv.png"
+OUTPUT_PATH = SCRIPT_DIR / "output"
+CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-
-# dobot parameters
-HOME_X = 232.09
-HOME_Y = -14.74
-HOME_Z = 129.59
-HOME_R = 3.63
-
+# Dobot parameters
+HOME_X, HOME_Y, HOME_Z, HOME_R = 232.09, -14.74, 129.59, 3.63
 PEN_Z = -8.15
+PORT = "/dev/ttyACM0"
 
+# Game configuration
+RECTANGLE_MAPPING = {
+    (0, 0): 1, (0, 1): 2, (0, 2): 3,
+    (1, 0): 4, (1, 1): 5, (1, 2): 6,
+    (2, 0): 7, (2, 1): 8, (2, 2): 9,
+}
 
-port = "/dev/ttyACM0"
+WINNING_COMBINATIONS = {
+    (1, 2, 3), (4, 5, 6), (7, 8, 9),  # Rows
+    (1, 4, 7), (2, 5, 8), (3, 6, 9),  # Columns
+    (1, 5, 9), (3, 5, 7)              # Diagonals
+}
 
-rectangle_mapping = {(0, 0): 1, 
-                     (0, 1): 2, 
-                     (0, 2): 3,
-                     (1,0): 4,
-                     (1,1): 5,
-                     (1,2): 6,
-                     (2,0): 7,
-                     (2,1): 8,
-                     (2,2): 9,
-    }
-
-winning_table = {(1,2,3): 1 ,
-                 (4,5,6): 1,
-                 (7,8,9): 1,
-                 (1,4,7): 1,
-                 (2,5,8): 1,
-                 (3,6,9): 1,
-                 (1,5,9): 1,
-                 (3,5,7): 1}
-
-cache = {}
-
-rect_mapping_inv = {v:k for k,v in rectangle_mapping.items()}
-
+RECT_MAPPING_INV = {v: k for k, v in RECTANGLE_MAPPING.items()}
 
 SYSTEM_PROMPT = """You are a tic-tac-toe grid analyzer. Analyze the tic-tac-toe grid in the given image and respond based on the user's query."""
 
-def find_rect(grid, symbol):
-    rect = None
-    for i in range(len(grid)):
-        for j in range(len(grid)):
-
-            if grid[i][j].lower() == symbol.lower() and cache.get((i,j)) is None:
-                rect = rectangle_mapping[(i, j)]
-                cache[(i,j)] = symbol
-    return rect
+GRID_QUERY = """Retrieve the 3x3 matrix from the image shown to you. Wherever there is a symbol seen simply place it in the same cell of the matrix you frame.
+Strictly return ONLY json with KEY as 'grid' and value as the matrix. Fill empty cells with empty strings (''). Be cautious about the camera capture. It might also show the original image flipped.
+Remember one mistake can cost my life to play again. Additionally do not add ``` json ```. Only return the dict"""
 
 
-def all_cells_empty(grid, empty=''):
-    return all(cell == empty for row in grid for cell in row)
-
-
-def validate_symbol_insertion(rect_number, symbol, grid):
+class GameState:
+    """Manages game state and validation"""
     
-    check = False
-
-    pos_x, pos_y = rect_mapping_inv[int(rect_number)]
-
-    if grid[pos_x][pos_y].strip().lower() == symbol.lower():
-        check = True
+    def __init__(self):
+        self.cache = {}
     
-    return check
-
-
-def validate_grid_count(grid, iteration_count):
+    def find_rect(self, grid, symbol):
+        """Find the rectangle where a new symbol was placed"""
+        for i in range(len(grid)):
+            for j in range(len(grid[i])):
+                if grid[i][j].lower() == symbol.lower() and (i, j) not in self.cache:
+                    rect = RECTANGLE_MAPPING[(i, j)]
+                    self.cache[(i, j)] = symbol
+                    return rect
+        return None
     
-    check=False
-    grid_count = 0
-    for i in range(len(grid)):
-        for j in range(len(grid)):
-            if grid[i][j] != "":
-                grid_count += 1
+    @staticmethod
+    def all_cells_empty(grid):
+        """Check if all cells in the grid are empty"""
+        return all(cell == '' for row in grid for cell in row)
     
-    if iteration_count == grid_count:
-        check = True
-
-    return check
-
-
-def check_win_or_not(grid, human_symbol, robot_symbol):
-
-    human_win = False
-    robot_win = False
-
-    grid_size = 3
+    @staticmethod
+    def validate_symbol_insertion(rect_number, symbol, grid):
+        """Validate that the correct symbol was placed in the correct cell"""
+        pos_x, pos_y = RECT_MAPPING_INV[int(rect_number)]
+        return grid[pos_x][pos_y].strip().lower() == symbol.lower()
     
-    human_symbol_records = []
-    robot_symbol_records = []
-
-    for i in range(grid_size):
-        for j in range(grid_size):
-            
-            if grid[i][j] == human_symbol:
-                rectangle_pos = rect_mapping_inv[(i, j)]
-                human_symbol_records.append(rectangle_pos)
-            elif grid[i][j] == robot_symbol:
-                rectangle_pos = rect_mapping_inv[(i, j)]
-                robot_symbol_records.append(rectangle_pos)
+    @staticmethod
+    def validate_grid_count(grid, expected_count):
+        """Validate that the grid has the expected number of symbols"""
+        actual_count = sum(1 for row in grid for cell in row if cell != "")
+        return actual_count == expected_count
     
-    if len(robot_symbol_records) < 3 and len(human_symbol_records) < 3:
-
-        return human_win, robot_win
-    
-    elif len(robot_symbol_records) > 2:
-        robot_win = bool(winning_table[tuple(robot_symbol_records)])
-        return human_win, robot_win
-    
-    elif len(human_symbol_records) > 2:
-        human_win = bool(winning_table[tuple(human_symbol_records)])
-        return human_win, robot_win
+    @staticmethod
+    def check_winner(grid, human_symbol, robot_symbol):
+        """Check if there's a winner"""
+        human_positions = set()
+        robot_positions = set()
         
-    else:
-        robot_win = bool(winning_table[tuple(robot_symbol_records)])
-        human_win = bool(winning_table[tuple(human_symbol_records)])
+        for i in range(3):
+            for j in range(3):
+                if grid[i][j] == human_symbol:
+                    human_positions.add(RECTANGLE_MAPPING[(i, j)])
+                elif grid[i][j] == robot_symbol:
+                    robot_positions.add(RECTANGLE_MAPPING[(i, j)])
+        
+        # Need at least 3 symbols to win
+        human_win = len(human_positions) >= 3 and any(
+            combo.issubset(human_positions) for combo in WINNING_COMBINATIONS
+        )
+        robot_win = len(robot_positions) >= 3 and any(
+            combo.issubset(robot_positions) for combo in WINNING_COMBINATIONS
+        )
+        
         return human_win, robot_win
+
+
+def get_player_input(prompt, valid_options, max_retries=2):
+    """Get validated input from the player"""
+    for attempt in range(max_retries):
+        user_input = input(prompt).strip().lower()
+        if user_input in valid_options:
+            return user_input
+        print(f"Invalid input. Please enter one of: {', '.join(valid_options)}")
+    return None
+
+
+def initialize_game():
+    """Initialize game settings and player configuration"""
+    print("------------ Let's start Tic Tac Toe Game ------------")
+    
+    # Get human symbol
+    human_symbol = get_player_input(
+        "Enter which symbol you would like (x/o): ",
+        ["x", "o"]
+    )
+    
+    if human_symbol is None:
+        print("Invalid symbol selection. Exiting.")
+        sys.exit(1)
+    
+    robot_symbol = "o" if human_symbol == "x" else "x"
+    print(f"Human: {human_symbol.upper()}, Robot: {robot_symbol.upper()}")
+    
+    # Get starting player
+    player_choice = get_player_input(
+        "Who plays first? (1=Robot, 2=Human): ",
+        ["1", "2"]
+    )
+    
+    if player_choice is None:
+        print("Invalid choice. Robot will start by default.")
+        player_choice = "1"
+    
+    player_info = {
+        "1": "robot",
+        "2": "human"
+    }
+    
+    starting_player = player_choice
+    
+    return human_symbol, robot_symbol, starting_player, player_info
+
+
+def process_human_turn(game_state, grid, human_symbol, simulation_count, use_camera_func):
+    """Process a human player's turn"""
+    print("\n--- Human's Turn ---")
+    time.sleep(2)
+    
+    grid_run = use_camera_func(user_query=GRID_QUERY, system_prompt=SYSTEM_PROMPT)
+    
+    if grid_run is None:
+        print("Failed to capture grid.")
+        return None, False
+    
+    rect = game_state.find_rect(grid_run, human_symbol)
+    
+    if rect is None:
+        print("Error: Symbol must be placed in an empty cell.")
+        return None, False
+    
+    if not game_state.validate_grid_count(grid_run, simulation_count):
+        print("Error: Only one symbol can be placed per turn.")
+        return None, False
+    
+    if not game_state.validate_symbol_insertion(rect, human_symbol, grid_run):
+        print("Error: Invalid symbol placement.")
+        return None, False
+    
+    print(f"✓ Human placed {human_symbol.upper()} at position {rect}")
+    return grid_run, True
+
+
+def process_robot_turn(game_state, grid, robot_symbol, simulation_count, use_camera_func, draw_mod=None):
+    """Process the robot's turn"""
+    print("\n--- Robot's Turn ---")
+    
+    rectangle = run_algorithm(board=grid)
+    print(f"Robot placing {robot_symbol.upper()} at position {rectangle}")
+    
+    if draw_mod:
+        ret = draw_mod.draw(rectangle_number=int(rectangle), dobot_symbol=robot_symbol)
+        if not ret:
+            print("Error: Failed to draw symbol.")
+            return None, False
+        time.sleep(3.0)  # Wait for Dobot to disconnect
+    else:
+        # Test mode
+        print(f"[TEST MODE] Draw {robot_symbol.upper()} at position {rectangle}, then press 'y':")
+        if input().strip().lower() != 'y':
+            return None, False
+    
+    grid_run = use_camera_func(user_query=GRID_QUERY, system_prompt=SYSTEM_PROMPT)
+    
+    if grid_run is None:
+        print("Failed to capture grid.")
+        return None, False
+    
+    if not game_state.validate_grid_count(grid_run, simulation_count):
+        print("Error: Grid count mismatch.")
+        return None, False
+    
+    if not game_state.validate_symbol_insertion(rectangle, robot_symbol, grid_run):
+        print("Error: Symbol not placed correctly.")
+        return None, False
+    
+    print(f"✓ Robot placed {robot_symbol.upper()} at position {rectangle}")
+    return grid_run, True
+
+
+def run_game_loop(human_symbol, robot_symbol, starting_player, player_info, use_camera_func, draw_mod=None):
+    """Main game loop"""
+    game_state = GameState()
+    
+    # Initialize grid
+    print("\nInitializing grid...")
+    if draw_mod:  # Dobot mode
+        grid = [['', '', ''], ['', '', '']]
+        check = True
+    else:  # Test mode
+        init_query = "Initialize an empty 3x3 matrix with empty strings (''). Return ONLY json with KEY 'grid'. Do not add ```json```."
+        grid = use_camera_func(user_query=init_query, system_prompt=SYSTEM_PROMPT)
+        check = game_state.all_cells_empty(grid)
+    
+    if not check:
+        print("Error: Grid cells are not empty. Please clear the board.")
+        return
+    
+    print("✓ Grid is ready. Starting game...\n")
+    
+    simulation_count = 0
+    current_player = starting_player
+    
+    while simulation_count < 9:
+        simulation_count += 1
+        print(f"\n{'='*50}")
+        print(f"Turn {simulation_count}/9")
+        print(f"{'='*50}")
+        
+        # Check for winner (starting from turn 3)
+        if simulation_count >= 3:
+            human_win, robot_win = game_state.check_winner(grid, human_symbol, robot_symbol)
+            if human_win or robot_win:
+                winner = "Human" if human_win else "Robot"
+                print(f"\n🎉 {winner} wins!")
+                return
+        
+        # Process turn
+        if player_info[current_player] == "human":
+            grid, success = process_human_turn(game_state, grid, human_symbol, simulation_count, use_camera_func)
+        else:
+            grid, success = process_robot_turn(game_state, grid, robot_symbol, simulation_count, use_camera_func, draw_mod)
+        
+        if not success or grid is None:
+            print("Game ended due to error.")
+            sys.exit(1)
+        
+        # Switch player
+        current_player = "2" if current_player == "1" else "1"
+    
+    print("\n🤝 Game ended in a draw!")
 
 
 def run_simulation_dobot():
-
-    # player_sim_1 = None
-    # player_sim_2 = None
-    player_info = {}
-
-    solver = build_grid()
-
-    print(f"Grid has been built successfully using solver {solver}")
-
-    with open(CONFIG_PATH, "r") as f:
-
-        config = json.load(f)
-
-    #CX, CY, CZ, CR = config["cell_rectangle_1"][0][0], config["cell_rectangle_1"][1][1], 15, 0
-
+    """Run game with physical Dobot"""
+    build_grid()  # Build the physical grid
+    
+    human_symbol, robot_symbol, starting_player, player_info = initialize_game()
+    
+    # Initialize draw module
     dm = draw_module(
-                        port=port,
-                        config_path=CONFIG_PATH,
-                        HOME_X=HOME_X,
-                        HOME_Y=HOME_Y,
-                        HOME_Z=HOME_Z,
-                        HOME_R=HOME_R,
-                        z_draw=PEN_Z,    # pen-down height (adjust for your pen/tool)
-                        z_lift=20.0,     # clearance above z_draw for moves
-                        inset=2.0,       # stay inside the box a bit
-                        symbol_margin=1.5  # extra safety margin to avoid touching grid lines
-                    )
-
-
-    max_retry = 0
-    print("------------Let's start Tic Tac Toe Game")
-    print("Enter which input symbol you would love to take")
-    human_symbol = None 
-    user_input = input()
+        port=PORT,
+        config_path=CONFIG_PATH,
+        HOME_X=HOME_X, HOME_Y=HOME_Y, HOME_Z=HOME_Z, HOME_R=HOME_R,
+        z_draw=PEN_Z,
+        z_lift=20.0,
+        inset=2.0,
+        symbol_margin=1.5
+    )
     
-    if user_input.lower() in ["x", "o"]:
-        human_symbol = user_input
-        print("Human Symbol Processed Successfully")
-    
-    
-    else:
-        print("You have entered the wrong symbol. It can only be either 'x' or an 'o'. Please Enter again")
-        max_retry += 1
-        user_input =  input()
-        if user_input.lower() in ["x", "o"]:
-            human_symbol = user_input
-            print("Human Symbol Processed Successfully")
-        
-        
-    
-    if max_retry >= 1 and human_symbol is None:
-        print("user_input cannot be None. Please re-run the script.")
-        sys.exit(0)
-
-    robot_symbol = None
-    
-    if human_symbol == "o":
-        robot_symbol = "x"
-    
-    else:
-        robot_symbol = "o"
-    
-    if human_symbol is not None:
-        print("Enter who can play first: 1 -----> me and 2 ------> you")
-        starting_player = None
-        player_input = input()
-        
-        if player_input not in ["1", "2"]:
-            print("Incorrect value is given. I will assume I will start playing the game.")
-            starting_player = "1"
-            player_info[starting_player] = "dobot"
-            player_info["2"] = "human"
-
-        elif player_input == "1":
-            starting_player = "1"
-            player_info[player_input] = "dobot"
-            player_info["2"] = "human"
-        
-        else:
-            starting_player = "2"
-            player_info[starting_player] = "human"
-            player_info["1"] = "dobot"
-        
-        # if starting_player is None:
-        #     sys.exit(0)
-
-
-        print("Starting the game.")
-        
-        # print("Initializing the grid.....")
-        # dobot_ins = Dobot(port=port)
-        # print(f"✓ Real Dobot connected on port: {port}")
-        # dobot_ins.move_to(CAMERA_X,CAMERA_Y,CAMERA_Z,CAMERA_R)
-        # dobot_ins.close()
-        #grid = run_camera_dobot(user_query="Initialize an empty 3x3 matrix with an empty string -> ''. Strictly return ONLY json with KEY as 'grid' and value as the matrix. \
-        #          Additionally do not add ``` json ```. Only return the dict", system_prompt=SYSTEM_PROMPT, camera_index=2)
-
-        # print("CHecking if all the cells are empty are not.")
-        # check = all_cells_empty(grid)
-        grid = [['', '', ''], ['', '', ''], ['', '', '']]
-        check=True
-
-        if check:
-            
-            print("Grid Cells are empty. Go ahead with the game")
-
-            # --- load + draw ---
-            # dm = draw_module(port=port, config_path=CONFIG_PATH, HOME_X=HOME_X, HOME_Y=HOME_Y, HOME_Z=HOME_Z, HOME_R=HOME_R, z_draw=PEN_Z,
-            # z_lift=20.0,     # clearance above z_draw for moves
-            # inset=2.0,       # stay inside the box a bit
-            # symbol_margin=1.5 )
-            
-            simulation_count = 0
-            flag = None
-            human_win, robot_win = False, False
-            player = starting_player
-            grid_sim = grid
-            winner = None
-
-            print("robot_symbol", robot_symbol)
-
-            while simulation_count < 9:
-
-                simulation_count += 1
-
-                if grid_sim is None:
-                    break
-
-                if simulation_count >= 3:
-                    human_win, robot_win = check_win_or_not(grid_sim, human_symbol, robot_symbol)
-
-                    if human_win:
-                        winner="human"
-                        break
-                    if robot_win:
-                        winner="robot"
-                        break
-
-                if player == "2":
-
-                    print(f"{player_info.get(player)} Turn to draw the symbol")
-                    
-                    print(time.sleep(5))
-                        
-                    grid_run = run_camera_dobot(user_query="Retrieve the 3x3 matrix from the image shown to you. Wherever there is a symbol seen simply place it in the same cell of the matrix you frame.\
-                    Strictly return ONLY json with KEY as 'grid' and value as the matrix. Fill empty cells with empty strings (''). Be cautious about the camera capture. It might also show the original image flipped.\
-                    Remember one maistake can cost my life to play again. Additionally do not add ``` json ```. Only return the dict", system_prompt=SYSTEM_PROMPT, camera_index=2)
-                    
-                    print("grid_run", grid_run)
-                    rect = find_rect(grid_run, symbol=human_symbol)
-                    
-                    if rect is None:
-                        print("You should insert the symbol at the desired square position. It's invalid if it's inserted elsewhere")
-                        break
-                    
-                    print("grid_run", grid_run)
-                    check_count = validate_grid_count(grid_run, simulation_count)
-
-                    if not check_count:
-                        print("You cannot insert multiple symbols in multiple places. Only one symbol insertion is allowed in one iteration.")
-                        break
-                    
-                    check = validate_symbol_insertion(rect, symbol=human_symbol, grid=grid_run)
-                    check_dobot_symbol = validate_symbol_insertion(rect, symbol=robot_symbol, grid=grid_run)
-                    
-                    if check:
-                        print("Success", grid_run)
-                        grid_sim = grid_run
-                    
-                    elif check_dobot_symbol:
-                        print("You have inserted the wrong symbol in the place where human symbol should be present.")
-                        sys.exit(0)
-                    
-                    else:
-                        print("There is some problem in symbol insertion at the corresponding cell")
-                        grid_sim = None
-                        break
-
-                    player = "1"
-
-                
-                elif player == "1":
-                            
-                    grid_run = None
-
-                    print(f"{player_info.get(player)} Turn to draw the symbol. Enter 'y' once the symbol is drawn from your end.")
-                    
-                    rectangle = run_algorithm(board=grid_sim)
-                    print("rect",rectangle)
-
-                    
-                    ret = dm.draw(rectangle_number=int(rectangle), dobot_symbol=robot_symbol)
-                    print("Waiting for Dobot to fully disconnect before camera capture...")
-                    time.sleep(3.0)  # 
-                    
-                    if ret:
-                        
-                        grid_run = run_camera_dobot(user_query="Retrieve the 3x3 matrix from the image shown to you. Wherever there is a symbol seen simply place it in the same cell of the matrix your frame.\
-                            Strictly return ONLY json with KEY as 'grid' and value as the matrix. Fill empty cells with empty strings (''). Be cautious about the camera capture. It might also show the original image flipped.\
-                            Remember one maistake can cost my life to play again. Additionally do not add ``` json ```. Only return the dict", system_prompt=SYSTEM_PROMPT, camera_index=2)
-                        
-                    check_count = validate_grid_count(grid_run, simulation_count)
-
-                    if not check_count:
-                        
-                        print("You cannot insert multiple symbols in multiple places. Only one symbol insertion is allowed in one iteration.")
-                        break
-                        
-                    
-                    check = validate_symbol_insertion(rectangle, symbol=robot_symbol, grid=grid_run)
-                    
-                    if check:
-                        grid_sim = grid_run
-                    
-                    else:
-                        print("There is some problem in symbol insertion at the corresponding cell")
-                        grid_sim = None
-                        break
-                    
-                    player = "2"
-                            
-                
-            if grid_sim is None:
-                print("Grid Simulation cannot be None. There is an error in your code.")
-                sys.exit(0)
-
-            if human_win:
-                print(f"Human has won this game. Human_symbol: {human_symbol}")
-            
-            elif robot_win:
-                print(f"Robot has won this game. Robot_Symbol: {robot_symbol}")
-
-            elif not human_win and not robot_win:
-                print("The match is draw.")
-                sys.exit(0)
-            
-            else:
-                sys.exit(0)
+    camera_func = lambda **kwargs: run_camera_dobot(**kwargs, camera_index=2)
+    run_game_loop(human_symbol, robot_symbol, starting_player, player_info, camera_func, dm)
 
 
 def run_simulation_test():
+    """Run game in test mode (manual drawing)"""
+    human_symbol, robot_symbol, starting_player, player_info = initialize_game()
+    run_game_loop(human_symbol, robot_symbol, starting_player, player_info, run_camera)
 
-    #solver = build_grid()
-
-    
-    player_info = {}
-    #print(f"Grid has been built successfully using solver {solver}")
-
-
-    max_retry = 0
-    print("------------Let's start Tic Tac Toe Game")
-    print("Enter which input symbol you would love to take")
-    human_symbol = None
-    user_input = input()
-    
-    if user_input.lower() in ["x", "o"]:
-        human_symbol = user_input
-        print("Human Symbol Processed Successfully")
-    
-    
-    else:
-        print("You have entered the wrong symbol. It can only be either 'x' or an 'o'. Please Enter again")
-        max_retry += 1
-        user_input =  input()
-        if user_input.lower() in ["x", "o"]:
-            human_symbol = user_input
-            print("Human Symbol Processed Successfully")
-        
-        
-    
-    if max_retry >= 1 and human_symbol is None:
-        print("user_input cannot be None. Please re-run the script.")
-        sys.exit(0)
-
-    robot_symbol = None
-    if human_symbol == "o":
-        robot_symbol = "x"
-    
-    else:
-        robot_symbol = "o"
-
-
-    
-    if human_symbol is not None:
-        print("Enter who can play first: 1 -----> me and 2 ------> you")
-        starting_player = None
-        player_input = input()
-        
-        if player_input not in ["1", "2"]:
-            print("Incorrect value is given. I will assume I will start playing the game.")
-            starting_player = "1"
-            player_info[starting_player] = "dobot"
-            player_info["2"] = "human"
-
-        elif player_input == "1":
-            starting_player = "1"
-            player_info[player_input] = "dobot"
-            player_info["2"] = "human"
-        
-        else:
-            starting_player = "2"
-            player_info[starting_player] = "human"
-            player_info["1"] = "dobot"
-        
-        # if starting_player is None:
-        #     sys.exit(0)
-
-
-        print("Starting the game.")
-
-        
-        print("Initializing the grid.....")
-        grid = run_camera(user_query="Initialize an empty 3x3 matrix with an empty string -> ''. Strictly return ONLY json with KEY as 'grid' and value as the matrix. \
-                  Additionally do not add ``` json ```. Only return the dict", system_prompt=SYSTEM_PROMPT)
-
-        print("CHecking if all the cells are empty are not.")
-        print("grid", grid)
-        check = all_cells_empty(grid)
-        print(check)
-
-        if check:
-            
-            print("Grid Cells are empty. Go ahead with the game")
-
-            # --- load + draw ---
-            #dm = draw_module(port=port, config_path=CONFIG_PATH, HOME_X=HOME_X, HOME_Y=HOME_Y, HOME_Z=HOME_Z, HOME_R=HOME_R)
-            
-            simulation_count = 0
-            flag = None
-            human_win, robot_win = False, False
-            player = starting_player
-            grid_sim = grid
-            winner = None
-
-            while simulation_count < 9:
-
-                simulation_count += 1
-
-                print("Simulation_Count", simulation_count)
-
-                if grid_sim is None:
-                    break
-
-                if simulation_count >= 3:
-                    human_win, robot_win = check_win_or_not(grid_sim, human_symbol, robot_symbol)
-
-                    if human_win:
-                        winner="human"
-                        break
-                    if robot_win:
-                        winner="robot"
-                        break
-
-                if player == "2":
-                    
-                    print(f"{player} simulation running")
-                    print(f"{player_info.get(player)} Turn to draw the symbol. Enter 'y' once the symbol is drawn from your end.")
-
-                    ck = input()
-                    
-                    if ck == "y":
-                        
-                        grid_run = run_camera(user_query="Retrieve the 3x3 matrix from the image shown to you. Wherever there is a symbol seen simply place it in the same cell of the matrix your frame.\
-                        Strictly return ONLY json with KEY as 'grid' and value as the matrix. Fill empty cells with empty strings ('').  Be cautious about the camera capture. It might also show the original image flipped.\
-                        Remember one maistake can cost my life to play again. Additionally do not add ``` json ```. Only return the dict", system_prompt=SYSTEM_PROMPT)
-
-                        print("[DEBUG]: ", simulation_count, grid_run)
-
-                        rect = find_rect(grid_run, symbol=human_symbol)
-                        print(rect, rect is None)
-                        
-                        if rect is None:
-                            print("You should insert the symbol at the desired square position. It's invalid if it's inserted elsewhere")
-                            break
-                        
-                        check_count = validate_grid_count(grid_run, simulation_count)
-
-                        if not check_count:
-                            print("You cannot insert multiple symbols in multiple places. Only one symbol insertion is allowed in one iteration.")
-                            break
-                        
-                        check = validate_symbol_insertion(rect, symbol=human_symbol, grid=grid_run)
-                        
-                        if check:
-                            grid_sim = grid_run
-                            print("SUccess", grid_sim)
-
-                        else:
-                            print("There is some problem in symbol insertion at the corresponding cell")
-                            grid_sim = None
-                        
-                        player = "1"
-                
-                elif player == "1":
-                    
-                    print(f"{player} simulation running")
-                    print(f"{player_info.get(player)} Turn to draw the symbol. Enter 'y' once the symbol is drawn from your end.")
-                    
-                    rectangle = run_algorithm(board=grid_sim)
-                    print(f"Draw symbol {robot_symbol} at square position: {rectangle} and enter 'y' once done.")
-                    
-                    dk = input()
-                    
-                    if dk == "y":
-                        
-                        grid_run = run_camera(user_query="Retrieve the 3x3 matrix from the image shown to you. Wherever there is a symbol seen simply place it in the same cell of the matrix your frame.\
-                        Strictly return ONLY json with KEY as 'grid' and value as the matrix.Fill empty cells with empty strings (''). Be cautious about the camera capture. It might also show the original image flipped.\
-                        Remember one maistake can cost my life to play again. Additionally do not add ``` json ```. Only return the dict", system_prompt=SYSTEM_PROMPT)
-
-                        print("[DEBUG]: ", simulation_count, grid_run)
-
-                        rect = find_rect(grid_run, symbol=robot_symbol)
-
-                        if rect != rectangle:
-                            print(f"Rectangle is not inserted at {rectangle} position. Game is over")
-                            break
-
-                        check_count = validate_grid_count(grid_run, simulation_count)
-
-                        if not check_count:
-                        
-                            print("You cannot insert multiple symbols in multiple places. Only one symbol insertion is allowed in one iteration.")
-                            break
-                        
-                        check = validate_symbol_insertion(rectangle, symbol=robot_symbol, grid=grid_run)
-                        
-                        if check:
-                            grid_sim = grid_run
-                    
-                        else:
-                            print("There is some problem in symbol insertion at the corresponding cell")
-                            grid_sim = None   
-
-                        player = "2"   
-
-                    else:
-                        print("Invalid input. Breaking")
-                        sys.exit(0)
-
-                
-
-            if grid_sim is None:
-                print("Grid Simulation cannot be None. There is an error in your code.")
-                sys.exit(0)
-
-            if human_win:
-                print(f"Human has won this game. Human_symbol: {human_symbol}")
-            
-            elif robot_win:
-                print(f"Robot has won this game. Robot_Symbol: {robot_symbol}")
-
-            elif not human_win and not robot_win:
-                print("The match is draw.")
-                sys.exit(0)
-            
-            else:
-                sys.exit(0)
 
 if __name__ == "__main__":
-
-    #run_simulation_test()
+    # run_simulation_test()
     run_simulation_dobot()
-
